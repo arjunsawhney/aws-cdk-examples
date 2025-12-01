@@ -9,6 +9,7 @@ from aws_cdk import (
     aws_apigateway as apigw_,
     aws_ec2 as ec2,
     aws_iam as iam,
+    aws_cloudwatch as cloudwatch,
     Duration,
 )
 from constructs import Construct
@@ -81,15 +82,52 @@ class ApigwHttpApiLambdaDynamodbPythonCdkStack(Stack):
             ),
             memory_size=1024,
             timeout=Duration.minutes(5),
+            tracing=lambda_.Tracing.ACTIVE,
         )
 
         # grant permission to lambda to write to demo table
         demo_table.grant_write_data(api_hanlder)
         api_hanlder.add_environment("TABLE_NAME", demo_table.table_name)
 
-        # Create API Gateway
-        apigw_.LambdaRestApi(
+        # Create API Gateway with X-Ray tracing enabled
+        api = apigw_.LambdaRestApi(
             self,
             "Endpoint",
             handler=api_hanlder,
+            deploy_options=apigw_.StageOptions(
+                tracing_enabled=True,
+            ),
+        )
+
+        # CloudWatch Alarm for Lambda errors
+        lambda_error_alarm = cloudwatch.Alarm(
+            self,
+            "LambdaErrorAlarm",
+            metric=api_hanlder.metric_errors(
+                period=Duration.minutes(1),
+                statistic="Sum",
+            ),
+            threshold=1,
+            evaluation_periods=1,
+            alarm_description="Alert when Lambda function errors occur",
+            alarm_name=f"{api_hanlder.function_name}-errors",
+        )
+
+        # CloudWatch Alarm for API Gateway 5XX errors
+        api_5xx_alarm = cloudwatch.Alarm(
+            self,
+            "Api5xxAlarm",
+            metric=cloudwatch.Metric(
+                namespace="AWS/ApiGateway",
+                metric_name="5XXError",
+                dimensions_map={
+                    "ApiName": api.rest_api_name,
+                },
+                period=Duration.minutes(1),
+                statistic="Sum",
+            ),
+            threshold=5,
+            evaluation_periods=1,
+            alarm_description="Alert on API Gateway 5XX errors",
+            alarm_name=f"{api.rest_api_name}-5xx-errors",
         )
